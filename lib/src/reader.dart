@@ -24,6 +24,7 @@
 
 import 'dart:async';
 import 'dart:ffi' as ffi;
+import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
@@ -47,12 +48,20 @@ const int _kReadEvents = sp_event.SP_EVENT_RX_READY | sp_event.SP_EVENT_ERROR;
 ///
 /// **Note:** The reader must be closed using [close()] when done with reading.
 abstract class SerialPortReader {
-  /// Creates a reader for the port. Optional [timeout] parameter can be
-  /// provided to specify a time im milliseconds between attempts to read after
+  /// Creates a reader for the port.
+  /// 
+  /// Optional [timeout] parameter can be
+  /// provided to specify a time in milliseconds between attempts to read after
   /// a failure to open the [port] for reading. If not given, [timeout] defaults
   /// to 500ms.
-  factory SerialPortReader(SerialPort port, {int? timeout}) =>
-      _SerialPortReaderImpl(port, timeout: timeout);
+  /// 
+  /// Optional [waitSleep] parameter can be provided to specify a sleep
+  /// duration while waiting for data. If the reader has to continously waiting
+  /// for data, and the [waitSleep] duration is not specified, it would cause
+  /// the CPU consumption to spike on Windows. If not given, [waitSleep] defaults to
+  /// [Duration.zero].
+  factory SerialPortReader(SerialPort port, {int? timeout, Duration? waitSleep}) =>
+      _SerialPortReaderImpl(port, timeout: timeout, waitSleep: waitSleep);
 
   /// Gets the port the reader operates on.
   SerialPort get port;
@@ -67,10 +76,12 @@ abstract class SerialPortReader {
 class _SerialPortReaderArgs {
   final int address;
   final int timeout;
+  final Duration waitSleep;
   final SendPort sendPort;
   _SerialPortReaderArgs({
     required this.address,
     required this.timeout,
+    required this.waitSleep,
     required this.sendPort,
   });
 }
@@ -78,13 +89,15 @@ class _SerialPortReaderArgs {
 class _SerialPortReaderImpl implements SerialPortReader {
   final SerialPort _port;
   final int _timeout;
+  final Duration _waitSleep;
   Isolate? _isolate;
   ReceivePort? _receiver;
   StreamController<Uint8List>? __controller;
 
-  _SerialPortReaderImpl(SerialPort port, {int? timeout})
+  _SerialPortReaderImpl(SerialPort port, {int? timeout, Duration? waitSleep})
       : _port = port,
-        _timeout = timeout ?? 500;
+        _timeout = timeout ?? 500,
+        _waitSleep = waitSleep ?? Duration.zero;
 
   @override
   SerialPort get port => _port;
@@ -119,6 +132,7 @@ class _SerialPortReaderImpl implements SerialPortReader {
     final args = _SerialPortReaderArgs(
       address: _port.address,
       timeout: _timeout,
+      waitSleep: _waitSleep,
       sendPort: _receiver!.sendPort,
     );
     Isolate.spawn(
@@ -148,6 +162,11 @@ class _SerialPortReaderImpl implements SerialPortReader {
         args.sendPort.send(data);
       } else if (bytes < 0) {
         args.sendPort.send(SerialPort.lastError);
+      } else {
+        // continue to wait for data
+        if (args.waitSleep != Duration.zero) {
+          sleep(args.waitSleep);
+        }
       }
     }
     _releaseEvents(events);
